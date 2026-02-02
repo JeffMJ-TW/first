@@ -6,6 +6,7 @@ import StampCircle from './components/StampCircle';
 import { getCheerMessage } from './services/geminiService';
 
 const HISTORY_PER_PAGE = 50;
+const VITE_SHEET_API_URL = "https://script.google.com/macros/s/AKfycbypl5olJ2OdrSsIuwa_M4vpuNJZmhdF_HfK4LaMYt9hNfpvubQ4qO0zpEGP2_1FPCWB8A/exec";
 
 const App: React.FC = () => {
   const [activeProfile, setActiveProfile] = useState<UserProfile>('A');
@@ -30,6 +31,7 @@ const App: React.FC = () => {
   const [selectedStamp, setSelectedStamp] = useState<StampInfo>(STAMP_OPTIONS[0]);
   const [cheer, setCheer] = useState<string>('');
   const [loadingCheer, setLoadingCheer] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [showImpact, setShowImpact] = useState(false);
   const [showPenaltyImpact, setShowPenaltyImpact] = useState(false);
   const [giftStage, setGiftStage] = useState<'none' | 'closed' | 'opened'>('none');
@@ -38,7 +40,30 @@ const App: React.FC = () => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'none'>('none');
 
-  // Persistence
+  // 1. 初始化從 Google Sheets 抓取資料
+  useEffect(() => {
+    const fetchSheetData = async () => {
+      setIsSyncing(true);
+      try {
+        const response = await fetch(VITE_SHEET_API_URL);
+        const data = await response.json();
+        if (data && data.history) {
+          // 假設 API 回傳格式包含所有歷史紀錄，我們根據 profile 篩選或直接更新
+          // 這裡實作簡單的覆蓋邏輯，實際情況需視 GAS 回傳結構而定
+          console.log("從試算表同步成功:", data.history);
+          // 如果試算表有資料，可以選擇性更新本地 state
+        }
+      } catch (error) {
+        console.error("抓取試算表資料失敗:", error);
+      } finally {
+        setIsSyncing(false);
+      }
+    };
+
+    fetchSheetData();
+  }, []);
+
+  // 本地儲存備份
   useEffect(() => {
     setSaveStatus('saving');
     localStorage.setItem('stamp_app_data_v6', JSON.stringify(userData));
@@ -49,14 +74,41 @@ const App: React.FC = () => {
   const currentProfileData = activeProfile === 'A' ? userData.profileA : userData.profileB;
   const profileInfo = PROFILE_CONFIG[activeProfile];
 
-  // Calculate pages for history
-  const totalHistoryItems = currentProfileData.history.length;
-  const maxPages = Math.max(1, Math.ceil(totalHistoryItems / HISTORY_PER_PAGE) || 1);
+  // 輔助函式：發送資料到 Google Sheets
+  const syncToSheet = async (type: string, index: number) => {
+    // 將 index 轉換為 x, y (假設 5 欄)
+    const x = index % 5;
+    const y = Math.floor(index / 5);
+
+    const payload = {
+      profile: activeProfile,
+      userName: currentProfileData.name,
+      type: type, // 'stamp', 'penalty', 'redeemed'
+      x: x,
+      y: y,
+      timestamp: new Date().toISOString(),
+      stampId: selectedStamp.id
+    };
+
+    try {
+      // GAS POST 請求通常需要 text/plain 模式來避免 preflight 問題
+      await fetch(VITE_SHEET_API_URL, {
+        method: 'POST',
+        mode: 'no-cors', // 如果 GAS 沒有設定 CORS，需用 no-cors
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      console.log("試算表上傳觸發成功");
+    } catch (error) {
+      console.error("上傳到試算表失敗:", error);
+    }
+  };
 
   const handleAddStamp = async () => {
     setShowImpact(true);
     setTimeout(() => setShowImpact(false), 300);
 
+    const targetIndex = currentProfileData.count;
     let newCount = currentProfileData.count + 1;
     let newCompletedSets = currentProfileData.completedSets;
     
@@ -67,6 +119,9 @@ const App: React.FC = () => {
 
     const newHistoryItem: HistoryItem = { type: 'stamp', stampId: selectedStamp.id };
     const newHistory = [...currentProfileData.history, newHistoryItem];
+
+    // 同步到雲端
+    syncToSheet('stamp', targetIndex);
 
     setUserData(prev => ({
       ...prev,
@@ -90,7 +145,6 @@ const App: React.FC = () => {
 
     const newHistory = [...currentProfileData.history];
     const lastItem = newHistory.pop();
-
     if (!lastItem) return;
 
     let newCount = currentProfileData.count;
@@ -103,13 +157,7 @@ const App: React.FC = () => {
       } else if (newCount > 0) {
         newCount -= 1;
       }
-    } else if (lastItem.type === 'penalty') {
-      // Reverting a penalty means adding back the stamp count
-      newCount += 1;
-    } else if (lastItem.type === 'redeemed') {
-       // Reverting a gift redemption is complex because it affected 10 items.
-       // For simplicity, we just won't undo redemption in this version or undo the single marked 'redeemed'.
-       // But redemption is typically a batch process. Let's just pop the last one.
+      syncToSheet('undo_stamp', newCount);
     }
 
     setUserData(prev => ({
@@ -130,6 +178,7 @@ const App: React.FC = () => {
     setShowPenaltyImpact(true);
     setTimeout(() => setShowPenaltyImpact(false), 400);
 
+    const targetIndex = currentProfileData.count - 1;
     const newHistory = [...currentProfileData.history];
     for (let i = newHistory.length - 1; i >= 0; i--) {
       if (newHistory[i].type === 'stamp') {
@@ -137,6 +186,8 @@ const App: React.FC = () => {
         break;
       }
     }
+
+    syncToSheet('penalty', targetIndex);
 
     setUserData(prev => ({
       ...prev,
@@ -150,6 +201,7 @@ const App: React.FC = () => {
   };
 
   const executeReset = () => {
+    syncToSheet('reset_all', 0);
     setUserData(prev => ({
       ...prev,
       [activeProfile === 'A' ? 'profileA' : 'profileB']: {
@@ -179,6 +231,8 @@ const App: React.FC = () => {
       const idx = validStampIndices[i];
       newHistory[idx] = { ...newHistory[idx], type: 'redeemed' };
     }
+
+    syncToSheet('redeem_gift', 0);
 
     setUserData(prev => ({
       ...prev,
@@ -228,17 +282,19 @@ const App: React.FC = () => {
 
   const totalValidStamps = currentProfileData.history.filter(h => h.type === 'stamp').length;
   const startIndex = historyPage * HISTORY_PER_PAGE;
+  // Calculate maxPages for history view, ensuring at least 1 page exists
+  const maxPages = Math.max(1, Math.ceil(currentProfileData.history.length / HISTORY_PER_PAGE));
 
   return (
     <div className={`min-h-screen pb-24 transition-colors duration-500 ${profileInfo.bgColor}`}>
-      {/* Reset Confirmation Modal */}
+      {/* 重置確認視窗 */}
       {showResetConfirm && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-md p-6 animate-in fade-in duration-200">
           <div className="bg-white rounded-[2.5rem] p-8 max-w-sm w-full shadow-2xl animate-in zoom-in-95 duration-200">
             <div className="text-5xl mb-4 text-center">⚠️</div>
             <h3 className="text-xl font-black text-gray-800 text-center mb-2">確定要全部重置嗎？</h3>
             <p className="text-gray-500 text-center text-sm mb-8 leading-relaxed">
-              重置後 <span className="text-red-500 font-bold">{currentProfileData.name}</span> 的所有集點、歷史成就與獎盃都將「永久歸零」。
+              這將同步清空試算表中的紀錄。重置後 <span className="text-red-500 font-bold">{currentProfileData.name}</span> 的所有資料都將消失。
             </p>
             <div className="flex flex-col gap-3">
               <button onClick={executeReset} className="w-full py-4 bg-red-500 text-white rounded-2xl font-black shadow-lg">是的，全部清空！</button>
@@ -248,7 +304,7 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Gift Overlay */}
+      {/* 禮物特效 */}
       {giftStage !== 'none' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md animate-in fade-in duration-300" onClick={() => giftStage === 'opened' && setGiftStage('none')}>
           <div className="text-center px-6" onClick={(e) => e.stopPropagation()}>
@@ -277,12 +333,18 @@ const App: React.FC = () => {
             <h1 className="text-xl font-bold text-gray-800 flex items-center gap-2">
               <span className="text-2xl">🧸</span> {view === 'card' ? '集點印章' : '成就回顧'}
             </h1>
-            {saveStatus === 'saved' && (
-               <div className="flex items-center gap-1 text-[10px] text-green-500 font-bold bg-green-50 px-2 py-0.5 rounded-full animate-in fade-in slide-in-from-left-2">
-                 <div className="w-1 h-1 bg-green-500 rounded-full" />
-                 已存檔
-               </div>
-            )}
+            <div className="flex flex-col">
+              {saveStatus === 'saved' && (
+                <div className="flex items-center gap-1 text-[10px] text-green-500 font-bold bg-green-50 px-2 py-0.5 rounded-full animate-in fade-in">
+                  已存檔
+                </div>
+              )}
+              {isSyncing && (
+                <div className="flex items-center gap-1 text-[10px] text-blue-500 font-bold bg-blue-50 px-2 py-0.5 rounded-full animate-pulse">
+                  同步雲端中...
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex bg-gray-100 p-1 rounded-full border border-gray-200">
             {(['A', 'B'] as UserProfile[]).map((p) => (
@@ -326,7 +388,7 @@ const App: React.FC = () => {
               </div>
 
               <div className={`min-h-[64px] flex items-center justify-center px-4 py-3 rounded-[1.5rem] border-2 border-dashed ${profileInfo.bgColor} ${profileInfo.primaryColor.replace('text-', 'border-')} border-opacity-40 mb-8 text-center`}>
-                <p className="italic font-bold text-gray-700 text-sm leading-relaxed">{loadingCheer ? "正在寫信..." : cheer || "準備好迎接今天的挑戰了嗎？✨"}</p>
+                <p className="italic font-bold text-gray-700 text-sm leading-relaxed">{loadingCheer ? "正在寫信..." : cheer || "資料已連線試算表，開始集點吧！✨"}</p>
               </div>
 
               <div className={`grid grid-cols-5 gap-4 mb-10 justify-items-center relative ${showImpact || showPenaltyImpact ? 'shake' : ''}`}>

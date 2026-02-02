@@ -1,7 +1,8 @@
 
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+// Initialize Gemini API client following the strict guideline
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const FALLBACK_CHEERS = [
   "太棒了！繼續保持喔！✨",
