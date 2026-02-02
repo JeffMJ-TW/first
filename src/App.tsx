@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { UserProfile, UserData, StampInfo, HistoryItem } from './types';
 import { STAMP_OPTIONS, PROFILE_CONFIG, MAX_STAMPS } from './constants';
@@ -6,6 +5,8 @@ import StampCircle from './components/StampCircle';
 import { getCheerMessage } from './services/geminiService';
 
 const HISTORY_PER_PAGE = 50;
+
+// ✅ 您直接把網址寫在這裡是對的，這樣可以避免 Netlify 環境變數讀不到的問題
 const VITE_SHEET_API_URL = "https://script.google.com/macros/s/AKfycbypl5olJ2OdrSsIuwa_M4vpuNJZmhdF_HfK4LaMYt9hNfpvubQ4qO0zpEGP2_1FPCWB8A/exec";
 
 const App: React.FC = () => {
@@ -40,19 +41,46 @@ const App: React.FC = () => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'none'>('none');
 
-  // 1. 初始化從 Google Sheets 抓取資料
+  // 🔥 關鍵修正：從 Google Sheets 抓取資料並「真正」更新畫面
   useEffect(() => {
     const fetchSheetData = async () => {
       setIsSyncing(true);
       try {
         const response = await fetch(VITE_SHEET_API_URL);
         const data = await response.json();
-        if (data && data.history) {
-          // 假設 API 回傳格式包含所有歷史紀錄，我們根據 profile 篩選或直接更新
-          // 這裡實作簡單的覆蓋邏輯，實際情況需視 GAS 回傳結構而定
-          console.log("從試算表同步成功:", data.history);
-          // 如果試算表有資料，可以選擇性更新本地 state
+        
+        console.log("雲端資料下載成功:", data);
+
+        // 確保回傳的是陣列 (這是我們之前寫的 doGet 邏輯)
+        if (Array.isArray(data)) {
+          // 將雲端資料轉換為 App 看得懂的 history 格式
+          const cloudHistory: HistoryItem[] = data.map((row: any) => ({
+            type: row.type || 'stamp', // 如果沒有類型，預設為蓋章
+            stampId: 'star', // 預設星星，或是您可以讓 GAS 也回傳 stampId
+            timestamp: row.timestamp
+          }));
+
+          // 計算有效印章數
+          const validStamps = cloudHistory.filter(h => h.type === 'stamp').length;
+          
+          // 計算目前的 count (取 10 的餘數)
+          const newCount = validStamps % MAX_STAMPS;
+          
+          // 計算完成幾組 (除以 10)
+          const newCompletedSets = Math.floor(validStamps / MAX_STAMPS);
+
+          // 更新 App 的狀態 (這裡假設大家都共用 Profile A，或是看您的需求)
+          setUserData(prev => ({
+            ...prev,
+            profileA: {
+              ...prev.profileA,
+              count: newCount,
+              completedSets: newCompletedSets,
+              history: cloudHistory // 使用雲端的完整歷史紀錄
+            }
+          }));
         }
+
       } catch (error) {
         console.error("抓取試算表資料失敗:", error);
       } finally {
@@ -61,7 +89,7 @@ const App: React.FC = () => {
     };
 
     fetchSheetData();
-  }, []);
+  }, []); // 空陣列表示只在打開網頁時執行一次
 
   // 本地儲存備份
   useEffect(() => {
@@ -95,7 +123,7 @@ const App: React.FC = () => {
       await fetch(VITE_SHEET_API_URL, {
         method: 'POST',
         mode: 'no-cors', // 如果 GAS 沒有設定 CORS，需用 no-cors
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'text/plain' }, // 使用 text/plain 避免複雜請求
         body: JSON.stringify(payload)
       });
       console.log("試算表上傳觸發成功");
@@ -120,9 +148,7 @@ const App: React.FC = () => {
     const newHistoryItem: HistoryItem = { type: 'stamp', stampId: selectedStamp.id };
     const newHistory = [...currentProfileData.history, newHistoryItem];
 
-    // 同步到雲端
-    syncToSheet('stamp', targetIndex);
-
+    // 1. 先更新畫面 (讓使用者覺得很快)
     setUserData(prev => ({
       ...prev,
       [activeProfile === 'A' ? 'profileA' : 'profileB']: {
@@ -133,6 +159,9 @@ const App: React.FC = () => {
         lastStampDate: new Date().toISOString()
       }
     }));
+
+    // 2. 再偷偷上傳雲端
+    syncToSheet('stamp', targetIndex);
 
     setLoadingCheer(true);
     const message = await getCheerMessage(currentProfileData.name, newCount === 0 ? 10 : newCount);
@@ -399,11 +428,11 @@ const App: React.FC = () => {
 
               <div className="space-y-4">
                 <div className="flex gap-3">
-                   <button onClick={handleAddStamp} className={`flex-[3] py-5 rounded-3xl font-black text-2xl shadow-xl transform transition-all active:scale-95 ${profileInfo.accentColor} text-white hover:brightness-105`}>蓋印章！ {selectedStamp.emoji}</button>
-                   <button onClick={handleUndo} disabled={currentProfileData.history.length === 0} className={`flex-1 py-5 rounded-3xl font-bold text-sm bg-gray-100 text-gray-400 flex flex-col items-center justify-center shadow-md transition-all active:scale-90 ${currentProfileData.history.length > 0 ? 'hover:bg-gray-200 text-gray-600' : 'opacity-50 cursor-not-allowed'}`}>
-                     <svg className="w-5 h-5 mb-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
-                     <span>撤回</span>
-                   </button>
+                    <button onClick={handleAddStamp} className={`flex-[3] py-5 rounded-3xl font-black text-2xl shadow-xl transform transition-all active:scale-95 ${profileInfo.accentColor} text-white hover:brightness-105`}>蓋印章！ {selectedStamp.emoji}</button>
+                    <button onClick={handleUndo} disabled={currentProfileData.history.length === 0} className={`flex-1 py-5 rounded-3xl font-bold text-sm bg-gray-100 text-gray-400 flex flex-col items-center justify-center shadow-md transition-all active:scale-90 ${currentProfileData.history.length > 0 ? 'hover:bg-gray-200 text-gray-600' : 'opacity-50 cursor-not-allowed'}`}>
+                      <svg className="w-5 h-5 mb-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+                      <span>撤回</span>
+                    </button>
                 </div>
                 
                 <div className="grid grid-cols-2 gap-4">
