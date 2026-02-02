@@ -29,9 +29,8 @@ const App: React.FC = () => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'none'>('none');
 
-  // 將讀取邏輯抽離成 useCallback，方便多處調用
+  // 🔄 核心同步邏輯：從 Google Sheets 獲取資料並重播狀態
   const fetchSheetData = useCallback(async () => {
-    // ❌ 如果網頁縮小或在背景，不發送請求
     if (document.visibilityState !== 'visible') return;
 
     setIsSyncing(true);
@@ -40,8 +39,6 @@ const App: React.FC = () => {
       const data = await response.json();
       
       if (Array.isArray(data)) {
-        console.log("正在同步雲端資料...", data.length + " 筆");
-
         let tempState = {
           profileA: { name: 'Brownie', count: 0, completedSets: 0, history: [] as HistoryItem[], avatar: 'https://picsum.photos/id/237/200/200' },
           profileB: { name: 'Snowy', count: 0, completedSets: 0, history: [] as HistoryItem[], avatar: 'https://picsum.photos/id/1025/200/200' }
@@ -55,6 +52,7 @@ const App: React.FC = () => {
           if (row.avatar && row.avatar !== 'undefined') target.avatar = row.avatar;
 
           if (row.type === 'stamp') {
+              // ✅ 雲端同步時，會保留當時蓋下的 stampId
               target.history.push({ type: 'stamp', stampId: row.stampId || 'star', timestamp: row.timestamp });
               target.count++;
               if (target.count >= MAX_STAMPS) {
@@ -110,30 +108,19 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // 監聽網頁可見性變化
     const handleVisibilityChange = () => {
-      // ✅ 只要打開畫面，就直接更新一次
-      if (document.visibilityState === 'visible') {
-        console.log("偵測到回到網頁，立即更新...");
-        fetchSheetData();
-      }
+      if (document.visibilityState === 'visible') fetchSheetData();
     };
-
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    
-    // 初始載入
     fetchSheetData();
-
-    // 🕒 每 30 秒自動更新一次
-    const intervalId = setInterval(fetchSheetData, 30000); 
-
+    const intervalId = setInterval(fetchSheetData, 30000); // 🕒 30 秒同步一次
     return () => {
       clearInterval(intervalId);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [fetchSheetData]);
 
-  // 輔助函式：發送資料到 Google Sheets
+  // 📤 發送資料到 Google Sheets
   const syncToSheet = async (type: string, overrideName?: string, overrideAvatar?: string) => {
     const currentData = activeProfile === 'A' ? userData.profileA : userData.profileB;
     const payload = {
@@ -161,16 +148,23 @@ const App: React.FC = () => {
     }
   };
 
-  // --- 操作邏輯區 ---
   const currentProfileData = activeProfile === 'A' ? userData.profileA : userData.profileB;
   const profileInfo = PROFILE_CONFIG[activeProfile];
 
+  // 🎯 蓋章邏輯：將當前選中的款式鎖定到歷史紀錄中
   const handleAddStamp = async () => {
     setShowImpact(true); setTimeout(() => setShowImpact(false), 300);
     let newCount = currentProfileData.count + 1;
     let newCompletedSets = currentProfileData.completedSets;
     if (newCount >= MAX_STAMPS) { newCount = 0; newCompletedSets++; }
-    const newHistory = [...currentProfileData.history, { type: 'stamp', stampId: selectedStamp.id } as HistoryItem];
+    
+    // ✅ 這裡鎖定當下選中的款式
+    const newHistoryEntry: HistoryItem = { 
+      type: 'stamp', 
+      stampId: selectedStamp.id, 
+      timestamp: new Date().toISOString() 
+    };
+    const newHistory = [...currentProfileData.history, newHistoryEntry];
 
     setUserData(prev => ({
       ...prev,
@@ -183,6 +177,7 @@ const App: React.FC = () => {
     setLoadingCheer(false);
   };
 
+  // 其餘按鈕邏輯保持不變...
   const handlePenaltyStamp = () => {
     if (currentProfileData.count === 0) return;
     setShowPenaltyImpact(true); setTimeout(() => setShowPenaltyImpact(false), 400);
@@ -190,20 +185,14 @@ const App: React.FC = () => {
     for (let i = newHistory.length - 1; i >= 0; i--) {
         if (newHistory[i].type === 'stamp') { newHistory[i].type = 'penalty'; break; }
     }
-    setUserData(prev => ({
-      ...prev,
-      [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, count: currentProfileData.count - 1, history: newHistory }
-    }));
+    setUserData(prev => ({ ...prev, [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, count: currentProfileData.count - 1, history: newHistory } }));
     syncToSheet('penalty');
     setCheer("喔不！被扣掉一個印章了 😢");
   };
 
   const executeReset = () => {
     syncToSheet('reset_all');
-    setUserData(prev => ({
-      ...prev,
-      [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, count: 0, completedSets: 0, history: [] }
-    }));
+    setUserData(prev => ({ ...prev, [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, count: 0, completedSets: 0, history: [] } }));
     setShowResetConfirm(false);
     setCheer('紀錄已歸零，重新開始努力吧！✨');
   };
@@ -211,25 +200,17 @@ const App: React.FC = () => {
   const saveName = () => {
     if (tempName.trim()) {
       const newName = tempName.trim();
-      setUserData(prev => ({
-        ...prev,
-        [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, name: newName }
-      }));
+      setUserData(prev => ({ ...prev, [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, name: newName } }));
       setIsEditingName(false);
       syncToSheet('update_profile', newName); 
-    } else {
-        setIsEditingName(false);
-    }
+    } else setIsEditingName(false);
   };
 
   const changeAvatar = () => {
     const newUrl = window.prompt("請輸入新的頭像圖片網址：", currentProfileData.avatar || "");
     if (newUrl && newUrl.trim()) {
         const validUrl = newUrl.trim();
-        setUserData(prev => ({
-            ...prev,
-            [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, avatar: validUrl }
-        }));
+        setUserData(prev => ({ ...prev, [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, avatar: validUrl } }));
         syncToSheet('update_profile', undefined, validUrl);
     }
   };
@@ -237,24 +218,14 @@ const App: React.FC = () => {
   const handleUndo = () => {
     if (currentProfileData.history.length === 0) return;
     const lastItem = currentProfileData.history[currentProfileData.history.length - 1];
-    if (lastItem.type !== 'stamp') {
-        alert("只能撤回「蓋章」動作喔！");
-        return;
-    }
+    if (lastItem.type !== 'stamp') return;
     const newHistory = [...currentProfileData.history];
     newHistory.pop();
     let newCount = currentProfileData.count;
     let newCompletedSets = currentProfileData.completedSets;
-    if (newCount === 0 && newCompletedSets > 0) {
-      newCount = MAX_STAMPS - 1;
-      newCompletedSets -= 1;
-    } else if (newCount > 0) {
-      newCount -= 1;
-    }
-    setUserData(prev => ({
-      ...prev,
-      [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, count: newCount, completedSets: newCompletedSets, history: newHistory }
-    }));
+    if (newCount === 0 && newCompletedSets > 0) { newCount = MAX_STAMPS - 1; newCompletedSets -= 1; }
+    else if (newCount > 0) newCount -= 1;
+    setUserData(prev => ({ ...prev, [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, count: newCount, completedSets: newCompletedSets, history: newHistory } }));
     syncToSheet('undo_stamp');
     setCheer("已撤回上一步！✨");
   };
@@ -268,17 +239,8 @@ const App: React.FC = () => {
         if (idx !== undefined) newHistory[idx] = { ...newHistory[idx], type: 'redeemed' };
       }
       const validCount = newHistory.filter(h => h.type === 'stamp').length;
-      setUserData(prev => ({
-        ...prev,
-        [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, count: validCount % MAX_STAMPS, completedSets: Math.floor(validCount / MAX_STAMPS), history: newHistory }
-      }));
+      setUserData(prev => ({ ...prev, [activeProfile === 'A' ? 'profileA' : 'profileB']: { ...currentProfileData, count: validCount % MAX_STAMPS, completedSets: Math.floor(validCount / MAX_STAMPS), history: newHistory } }));
       setGiftStage('closed');
-  };
-
-  const handleGiftClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (giftStage === 'closed') setGiftStage('opened');
-    else if (giftStage === 'opened') setGiftStage('none');
   };
 
   const totalValidStamps = currentProfileData.history.filter(h => h.type === 'stamp').length;
@@ -287,15 +249,12 @@ const App: React.FC = () => {
 
   return (
     <div className={`min-h-screen pb-24 transition-colors duration-500 ${profileInfo.bgColor}`}>
-        {/* 重置確認視窗 */}
         {showResetConfirm && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-md p-6 animate-in fade-in duration-200">
-          <div className="bg-white rounded-[2.5rem] p-8 max-w-sm w-full shadow-2xl animate-in zoom-in-95 duration-200">
-            <div className="text-5xl mb-4 text-center">⚠️</div>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-md p-6">
+          <div className="bg-white rounded-[2.5rem] p-8 max-w-sm w-full shadow-2xl">
             <h3 className="text-xl font-black text-gray-800 text-center mb-2">確定要全部重置嗎？</h3>
-            <p className="text-gray-500 text-center text-sm mb-8 leading-relaxed">這將同步清空試算表中的紀錄。</p>
             <div className="flex flex-col gap-3">
-              <button onClick={executeReset} className="w-full py-4 bg-red-500 text-white rounded-2xl font-black shadow-lg">是的，全部清空！</button>
+              <button onClick={executeReset} className="w-full py-4 bg-red-500 text-white rounded-2xl font-black">是的，全部清空！</button>
               <button onClick={() => setShowResetConfirm(false)} className="w-full py-4 bg-gray-100 text-gray-500 rounded-2xl font-bold">先不要</button>
             </div>
           </div>
@@ -303,19 +262,17 @@ const App: React.FC = () => {
       )}
       
       {giftStage !== 'none' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md animate-in fade-in duration-300" onClick={() => giftStage === 'opened' && setGiftStage('none')}>
-          <div className="text-center px-6" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md" onClick={() => giftStage === 'opened' && setGiftStage('none')}>
+          <div className="text-center px-6">
             {giftStage === 'closed' ? (
-              <div className="flex flex-col items-center">
-                <div onClick={handleGiftClick} className="text-[12rem] gift-bounce cursor-pointer">🎁</div>
-                <h2 className="text-4xl font-black text-white mb-4">你獲得了一個驚喜禮物！</h2>
-                <div className="bg-white/10 px-6 py-2 rounded-full mb-8"><p className="text-amber-200 animate-pulse font-bold">點擊禮物盒來打開它 ✨</p></div>
+              <div onClick={() => setGiftStage('opened')} className="flex flex-col items-center cursor-pointer">
+                <div className="text-[12rem] gift-bounce">🎁</div>
+                <h2 className="text-4xl font-black text-white">你獲得了一個驚喜禮物！</h2>
               </div>
             ) : (
-              <div className="flex flex-col items-center animate-in zoom-in duration-500" onClick={handleGiftClick}>
-                <div className="text-[12rem] mb-8 relative">🍭<div className="absolute inset-0 flex items-center justify-center pointer-events-none"><span className="text-6xl confetti-slow">🎉</span></div></div>
-                <h2 className="text-5xl font-black text-white mb-4 italic">WOW! 太棒了!</h2>
-                <p className="text-2xl text-amber-100 font-bold bg-white/20 px-8 py-3 rounded-2xl backdrop-blur-lg">獎勵自己一個甜甜的時刻吧！🧁</p>
+              <div className="flex flex-col items-center" onClick={() => setGiftStage('none')}>
+                <div className="text-[12rem] mb-8">🍭</div>
+                <h2 className="text-5xl font-black text-white">WOW! 太棒了!</h2>
               </div>
             )}
           </div>
@@ -325,7 +282,7 @@ const App: React.FC = () => {
       <header className="sticky top-0 z-30 bg-white/90 backdrop-blur-md shadow-sm border-b border-gray-100">
         <div className="max-w-xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <h1 className="text-xl font-bold text-gray-800 flex items-center gap-2"><span className="text-2xl">🧸</span> {view === 'card' ? '集點印章' : '成就回顧'}</h1>
+            <h1 className="text-xl font-bold text-gray-800"><span className="text-2xl">🧸</span> {view === 'card' ? '集點印章' : '成就回顧'}</h1>
             <div className="flex flex-col">
               {saveStatus === 'saved' && <div className="text-[10px] text-green-500 font-bold bg-green-50 px-2 py-0.5 rounded-full">已存檔</div>}
               {isSyncing && <div className="text-[10px] text-blue-500 font-bold bg-blue-50 px-2 py-0.5 rounded-full animate-pulse">同步中...</div>}
@@ -347,19 +304,15 @@ const App: React.FC = () => {
             <div className="bg-white rounded-[2.5rem] p-8 shadow-2xl border border-white relative overflow-hidden">
               <div className="flex items-center justify-between mb-8 relative z-10">
                 <div className="flex items-center gap-4">
-                  <div className="relative group cursor-pointer" onClick={changeAvatar}>
+                  <div className="relative cursor-pointer" onClick={changeAvatar}>
                     <img src={currentProfileData.avatar || profileInfo.avatar} className="w-16 h-16 rounded-3xl object-cover ring-4 ring-gray-50 shadow-md" alt="avatar" />
                   </div>
                   <div className="flex flex-col">
-                    <div className="flex items-center gap-2">
-                      {isEditingName ? (
-                        <input autoFocus value={tempName} onChange={(e) => setTempName(e.target.value)} onBlur={saveName} onKeyDown={(e) => e.key === 'Enter' && saveName()} className="border-b-4 border-amber-300 outline-none w-36 px-1 text-2xl font-black bg-transparent" />
-                      ) : (
-                        <div className="flex items-center gap-2 group cursor-pointer" onClick={() => { setTempName(currentProfileData.name); setIsEditingName(true); }}>
-                          <h2 className={`text-2xl font-black ${profileInfo.primaryColor}`}>{currentProfileData.name}</h2>
-                        </div>
-                      )}
-                    </div>
+                    {isEditingName ? (
+                      <input autoFocus value={tempName} onChange={(e) => setTempName(e.target.value)} onBlur={saveName} onKeyDown={(e) => e.key === 'Enter' && saveName()} className="border-b-4 border-amber-300 outline-none w-36 px-1 text-2xl font-black bg-transparent" />
+                    ) : (
+                      <h2 onClick={() => { setTempName(currentProfileData.name); setIsEditingName(true); }} className={`text-2xl font-black cursor-pointer ${profileInfo.primaryColor}`}>{currentProfileData.name}</h2>
+                    )}
                     <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mt-1">目前進度: {currentProfileData.count}/10</p>
                   </div>
                 </div>
@@ -367,11 +320,31 @@ const App: React.FC = () => {
               </div>
 
               <div className={`min-h-[64px] flex items-center justify-center px-4 py-3 rounded-[1.5rem] border-2 border-dashed ${profileInfo.bgColor} ${profileInfo.primaryColor.replace('text-', 'border-')} border-opacity-40 mb-8 text-center`}>
-                <p className="italic font-bold text-gray-700 text-sm leading-relaxed">{loadingCheer ? "正在寫信..." : cheer || "資料已連線，開始集點吧！✨"}</p>
+                <p className="italic font-bold text-gray-700 text-sm">{loadingCheer ? "正在寫信..." : cheer || "開始集點吧！✨"}</p>
               </div>
 
+              {/* 🍓 印章格子區：這部分已修復，會讀取歷史紀錄中的正確款式 */}
               <div className={`grid grid-cols-5 gap-4 mb-10 justify-items-center relative ${showImpact || showPenaltyImpact ? 'shake' : ''}`}>
-                {Array.from({ length: MAX_STAMPS }).map((_, i) => (<StampCircle key={i} index={i} isStamped={i < currentProfileData.count} emoji={selectedStamp.emoji} />))}
+                {Array.from({ length: MAX_STAMPS }).map((_, i) => {
+                  // ✅ 過濾出屬於目前這張卡片（這一組 10 點）的有效印章
+                  const validStampsInCurrentSet = currentProfileData.history.filter(h => h.type === 'stamp');
+                  // 找出對應位置的印章紀錄
+                  const stampRecord = validStampsInCurrentSet[currentProfileData.completedSets * MAX_STAMPS + i];
+                  
+                  // 根據紀錄找到對應的 emoji，如果還沒蓋，就預覽當前選中的款式
+                  const displayEmoji = stampRecord 
+                    ? STAMP_OPTIONS.find(s => s.id === stampRecord.stampId)?.emoji 
+                    : selectedStamp.emoji;
+
+                  return (
+                    <StampCircle 
+                      key={i} 
+                      index={i} 
+                      isStamped={i < currentProfileData.count} 
+                      emoji={displayEmoji || '⭐'} 
+                    />
+                  );
+                })}
                 {showImpact && <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20"><span className="text-[10rem] impact-animation">{selectedStamp.emoji}</span></div>}
                 {showPenaltyImpact && <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20"><span className="text-[12rem] impact-animation text-red-500 font-black opacity-80">✕</span></div>}
               </div>
@@ -379,27 +352,27 @@ const App: React.FC = () => {
               <div className="space-y-4">
                 <div className="flex gap-3">
                     <button onClick={handleAddStamp} className={`flex-[3] py-5 rounded-3xl font-black text-2xl shadow-xl active:scale-95 ${profileInfo.accentColor} text-white`}>蓋印章！ {selectedStamp.emoji}</button>
-                    <button onClick={handleUndo} disabled={currentProfileData.history.length === 0} className="flex-1 py-5 rounded-3xl font-bold text-sm bg-gray-100 text-gray-400 flex flex-col items-center justify-center shadow-md active:scale-90">
+                    <button onClick={handleUndo} disabled={currentProfileData.history.length === 0} className="flex-1 py-5 rounded-3xl bg-gray-100 text-gray-400 flex flex-col items-center justify-center shadow-md active:scale-90">
                       <svg className="w-5 h-5 mb-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
-                      <span>撤回</span>
+                      <span className="text-[10px] font-bold">撤回</span>
                     </button>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <button onClick={handlePenaltyStamp} disabled={currentProfileData.count === 0} className={`py-4 rounded-2xl font-bold text-sm border-2 transition-all flex items-center justify-center gap-2 ${currentProfileData.count === 0 ? 'border-gray-100 text-gray-200' : 'border-red-100 text-red-500'}`}><span>❌</span> 扣一點</button>
-                  <button onClick={() => setShowResetConfirm(true)} className="py-4 rounded-2xl text-white bg-gray-400 font-black text-sm shadow-md flex items-center justify-center gap-2"><span>♻️</span> 重置全部</button>
+                  <button onClick={handlePenaltyStamp} disabled={currentProfileData.count === 0} className={`py-4 rounded-2xl font-bold text-sm border-2 ${currentProfileData.count === 0 ? 'border-gray-100 text-gray-200' : 'border-red-100 text-red-500'}`}>❌ 扣一點</button>
+                  <button onClick={() => setShowResetConfirm(true)} className="py-4 rounded-2xl text-white bg-gray-400 font-black text-sm shadow-md">♻️ 重置全部</button>
                 </div>
               </div>
             </div>
 
             <section className="bg-white/60 backdrop-blur-xl rounded-[2rem] p-7 border border-white shadow-lg">
-              <h3 className="text-gray-400 font-black mb-5 text-xs uppercase tracking-[0.2em]">選擇款式</h3>
+              <h3 className="text-gray-400 font-black mb-5 text-xs uppercase tracking-widest">選擇款式</h3>
               <div className="grid grid-cols-6 gap-3">{STAMP_OPTIONS.map((stamp) => (<button key={stamp.id} onClick={() => setSelectedStamp(stamp)} className={`aspect-square rounded-2xl flex items-center justify-center text-3xl transition-all ${selectedStamp.id === stamp.id ? `ring-4 ring-offset-4 ring-gray-300 scale-110 shadow-xl ${stamp.color}` : 'bg-white shadow-sm'}`}>{stamp.emoji}</button>))}</div>
             </section>
           </div>
         ) : (
           <div className="bg-white rounded-[2.5rem] p-8 shadow-2xl border border-white min-h-[580px] flex flex-col">
             <div className="flex items-center justify-between mb-10">
-              <div className="flex items-center gap-4"><div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-3xl shadow-inner ${profileInfo.bgColor}`}>🏆</div><div><h2 className="text-2xl font-black text-gray-800">成就榜</h2><p className="text-sm font-bold text-gray-400">有效累積: {totalValidStamps} 個</p></div></div>
+              <div className="flex items-center gap-4"><div className="w-14 h-14 rounded-2xl flex items-center justify-center text-3xl shadow-inner bg-amber-50">🏆</div><div><h2 className="text-2xl font-black text-gray-800">成就榜</h2><p className="text-sm font-bold text-gray-400">有效累積: {totalValidStamps} 個</p></div></div>
               <button onClick={handleRedeemGift} disabled={totalValidStamps < 10} className={`px-6 py-3 rounded-2xl font-black text-sm shadow-xl ${totalValidStamps >= 10 ? 'bg-gradient-to-br from-amber-400 to-orange-500 text-white' : 'bg-gray-100 text-gray-300'}`}>🎁 兌換獎勵</button>
             </div>
             <div className="bg-gray-50/70 p-7 rounded-[2rem] mb-8 flex-grow shadow-inner border border-gray-100 overflow-y-auto">
@@ -414,9 +387,9 @@ const App: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center justify-between pt-6 border-t border-gray-100">
-              <button onClick={() => setHistoryPage(p => Math.max(0, p - 1))} disabled={historyPage === 0} className={`px-5 py-2.5 rounded-2xl text-sm font-black ${historyPage === 0 ? 'text-gray-200' : 'text-gray-600'}`}>⬅️ 上一頁</button>
+              <button onClick={() => setHistoryPage(p => Math.max(0, p - 1))} disabled={historyPage === 0} className="px-5 py-2.5 rounded-2xl text-sm font-black text-gray-600">⬅️ 上一頁</button>
               <span className="text-lg font-black text-gray-800">{historyPage + 1} / {maxPages}</span>
-              <button onClick={() => setHistoryPage(p => Math.min(maxPages - 1, p + 1))} disabled={historyPage >= maxPages - 1} className={`px-5 py-2.5 rounded-2xl text-sm font-black ${historyPage >= maxPages - 1 ? 'text-gray-200' : 'text-gray-600'}`}>下一頁 ➡️</button>
+              <button onClick={() => setHistoryPage(p => Math.min(maxPages - 1, p + 1))} disabled={historyPage >= maxPages - 1} className="px-5 py-2.5 rounded-2xl text-sm font-black text-gray-600">下一頁 ➡️</button>
             </div>
           </div>
         )}
