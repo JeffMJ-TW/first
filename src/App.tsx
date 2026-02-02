@@ -1,20 +1,3 @@
-這是一個很典型的「剪貼不完整」錯誤。錯誤訊息 Unexpected end of file 出現在第 107 行，表示程式碼貼到一半就斷掉了（完整的檔案應該有 400 多行）。
-
-這可能是因為程式碼太長，複製時沒有拉到底。
-
-為了確保這次能一次成功，請依照以下步驟操作：
-
-進入 GitHub 編輯頁面：打開 src/App.tsx，按下編輯（鉛筆圖示）。
-
-全選刪除：按 Ctrl + A (Mac 是 Cmd + A) 全選，然後按 Delete 清空目前所有內容。
-
-複製完整代碼：請點擊下方程式碼區塊右上角的 "Copy" 按鈕（如果有的話），或是務必從第一行 import 拉到最後一行 export default App;。
-
-貼上並 Commit。
-
-這是修復了 「括號斷裂」 並包含 「正確兌換 (只扣10點)」 與 「雲端撤回」 的完整程式碼：
-
-TypeScript
 import React, { useState, useEffect } from 'react';
 import { UserProfile, UserData, StampInfo, HistoryItem } from './types';
 import { STAMP_OPTIONS, PROFILE_CONFIG, MAX_STAMPS } from './constants';
