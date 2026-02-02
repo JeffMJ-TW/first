@@ -5,14 +5,14 @@ import StampCircle from './components/StampCircle';
 import { getCheerMessage } from './services/geminiService';
 
 const HISTORY_PER_PAGE = 50;
-const VITE_SHEET_API_URL = "https://script.google.com/macros/s/AKfycbwKQIF6EbuzifPKhOgVWv74Ia1xruzC7mE-uLY0aYNmPrnnsLEpPGexNWduM9VAc84gCQ/exec";
+// 請確認這串網址是您最新的 Apps Script 網址 (結尾是 /exec)
+const VITE_SHEET_API_URL = "https://script.google.com/macros/s/AKfycbypl5olJ2OdrSsIuwa_M4vpuNJZmhdF_HfK4LaMYt9hNfpvubQ4qO0zpEGP2_1FPCWB8A/exec";
 
 const App: React.FC = () => {
   const [activeProfile, setActiveProfile] = useState<UserProfile>('A');
   const [view, setView] = useState<'card' | 'history'>('card');
   const [historyPage, setHistoryPage] = useState(0);
   
-  // 初始化 state
   const [userData, setUserData] = useState<UserData>({
       profileA: { name: 'Brownie', count: 0, completedSets: 0, history: [], avatar: 'https://picsum.photos/id/237/200/200' },
       profileB: { name: 'Snowy', count: 0, completedSets: 0, history: [], avatar: 'https://picsum.photos/id/1025/200/200' }
@@ -30,7 +30,7 @@ const App: React.FC = () => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'none'>('none');
 
-  // 🔥 核心邏輯升級：事件重播 (Event Replay)
+  // 🔥 核心邏輯：事件重播 (Event Replay) - 含撤回與正確兌換邏輯
   useEffect(() => {
     const fetchSheetData = async () => {
       setIsSyncing(true);
@@ -39,24 +39,18 @@ const App: React.FC = () => {
         const data = await response.json();
         
         if (Array.isArray(data)) {
-          console.log("正在重播歷史事件...", data.length + " 筆");
-
-          // 創建一個空的暫存狀態，準備從頭開始「演」一遍
           let tempState = {
             profileA: { name: 'Brownie', count: 0, completedSets: 0, history: [] as HistoryItem[], avatar: 'https://picsum.photos/id/237/200/200' },
             profileB: { name: 'Snowy', count: 0, completedSets: 0, history: [] as HistoryItem[], avatar: 'https://picsum.photos/id/1025/200/200' }
           };
 
-          // 依序讀取每一行資料 (時間越早的越前面)
           data.forEach((row: any) => {
-            const p = row.profile === 'B' ? 'profileB' : 'profileA'; // 判斷是誰的操作
+            const p = row.profile === 'B' ? 'profileB' : 'profileA';
             const target = tempState[p];
 
-            // 1. 同步名字與頭像 (如果該行資料有紀錄名字，就更新)
             if (row.userName && row.userName !== 'undefined') target.name = row.userName;
             if (row.avatar && row.avatar !== 'undefined') target.avatar = row.avatar;
 
-            // 2. 根據動作類型執行邏輯
             if (row.type === 'stamp') {
                 target.history.push({ type: 'stamp', stampId: row.stampId || 'star', timestamp: row.timestamp });
                 target.count++;
@@ -65,10 +59,7 @@ const App: React.FC = () => {
                     target.completedSets++;
                 }
             } else if (row.type === 'penalty') {
-                // 找到最後一個有效的印章並標記為 penalty
-                // 這裡簡化邏輯：直接扣分，並在歷史中修改
                 if (target.count > 0) target.count--;
-                // 在歷史紀錄中找最新的 stamp 改為 penalty (純顯示用)
                 for (let i = target.history.length - 1; i >= 0; i--) {
                     if (target.history[i].type === 'stamp') {
                         target.history[i].type = 'penalty';
@@ -76,18 +67,41 @@ const App: React.FC = () => {
                     }
                 }
             } else if (row.type === 'reset_all') {
-                // 遇到重置指令，直接清空該使用者的當前進度
                 target.count = 0;
                 target.completedSets = 0;
-                target.history = []; // 歷史紀錄也清空
+                target.history = [];
+            } else if (row.type === 'undo_stamp') {
+                // 🧹 遇到撤回指令：把最後一個印章擦掉
+                for (let i = target.history.length - 1; i >= 0; i--) {
+                    if (target.history[i].type === 'stamp') {
+                        target.history.splice(i, 1); // 移除紀錄
+                        // 倒退計數
+                        if (target.count === 0 && target.completedSets > 0) {
+                             target.count = MAX_STAMPS - 1;
+                             target.completedSets--;
+                        } else if (target.count > 0) {
+                             target.count--;
+                        }
+                        break;
+                    }
+                }
             } else if (row.type === 'redeem_gift') {
-                // 遇到兌換指令
-                // 將目前歷史中的印章標記為 redeemed (視需求而定，這裡簡化處理)
-                target.history = target.history.map(h => h.type === 'stamp' ? { ...h, type: 'redeemed' } : h);
+                // 🎁 遇到兌換指令：精準扣除前 10 個
+                let deducted = 0;
+                for (let i = 0; i < target.history.length; i++) {
+                    if (target.history[i].type === 'stamp') {
+                        target.history[i].type = 'redeemed';
+                        deducted++;
+                        if (deducted >= 10) break; // 扣滿 10 個就停
+                    }
+                }
+                // 重新計算剩餘點數
+                const validStamps = target.history.filter((h: HistoryItem) => h.type === 'stamp').length;
+                target.count = validStamps % MAX_STAMPS;
+                target.completedSets = Math.floor(validStamps / MAX_STAMPS);
             }
           });
 
-          // 演完之後，把最終結果更新到畫面上
           setUserData(tempState);
         }
       } catch (error) {
@@ -98,26 +112,21 @@ const App: React.FC = () => {
     };
 
     fetchSheetData();
-    // 設定每 5 秒自動同步一次，讓名字修改能即時看到
     const intervalId = setInterval(fetchSheetData, 5000); 
     return () => clearInterval(intervalId);
   }, []);
 
-  // 輔助函式：發送資料到 Google Sheets
   const syncToSheet = async (type: string, overrideName?: string, overrideAvatar?: string) => {
     const currentData = activeProfile === 'A' ? userData.profileA : userData.profileB;
     const payload = {
       profile: activeProfile,
-      userName: overrideName || currentData.name, // 使用傳入的新名字或當前名字
+      userName: overrideName || currentData.name,
       avatar: overrideAvatar || currentData.avatar,
       type: type, 
-      x: 0, y: 0, // 簡化座標，目前邏輯以 event 為主
+      x: 0, y: 0,
       timestamp: new Date().toISOString(),
       stampId: selectedStamp.id
     };
-
-    // 先本地更新 (讓體驗流暢)
-    // 注意：這裡不執行 setUserData，因為操作函式已經執行了。這裡只負責傳輸。
     
     try {
       await fetch(VITE_SHEET_API_URL, {
@@ -131,22 +140,18 @@ const App: React.FC = () => {
     }
   };
 
-  // --- 操作邏輯區 (需配合 syncToSheet 使用) ---
-
   const currentProfileData = activeProfile === 'A' ? userData.profileA : userData.profileB;
   const profileInfo = PROFILE_CONFIG[activeProfile];
 
   const handleAddStamp = async () => {
     setShowImpact(true); setTimeout(() => setShowImpact(false), 300);
     
-    // 計算新狀態
     let newCount = currentProfileData.count + 1;
     let newCompletedSets = currentProfileData.completedSets;
     if (newCount >= MAX_STAMPS) { newCount = 0; newCompletedSets++; }
     
     const newHistory = [...currentProfileData.history, { type: 'stamp', stampId: selectedStamp.id } as HistoryItem];
 
-    // 本地更新
     setUserData(prev => ({
       ...prev,
       [activeProfile === 'A' ? 'profileA' : 'profileB']: {
@@ -157,7 +162,6 @@ const App: React.FC = () => {
       }
     }));
 
-    // 雲端同步
     syncToSheet('stamp');
     
     setLoadingCheer(true);
@@ -165,11 +169,47 @@ const App: React.FC = () => {
     setLoadingCheer(false);
   };
 
+  // ✅ 修正後的撤回功能：無警示視窗，直接發送雲端指令
+  const handleUndo = () => {
+    if (currentProfileData.history.length === 0) return;
+
+    const lastItem = currentProfileData.history[currentProfileData.history.length - 1];
+    if (lastItem.type !== 'stamp') {
+        alert("只能撤回「蓋章」動作喔！");
+        return;
+    }
+
+    const newHistory = [...currentProfileData.history];
+    newHistory.pop();
+
+    let newCount = currentProfileData.count;
+    let newCompletedSets = currentProfileData.completedSets;
+
+    if (newCount === 0 && newCompletedSets > 0) {
+      newCount = MAX_STAMPS - 1;
+      newCompletedSets -= 1;
+    } else if (newCount > 0) {
+      newCount -= 1;
+    }
+
+    setUserData(prev => ({
+      ...prev,
+      [activeProfile === 'A' ? 'profileA' : 'profileB']: {
+        ...currentProfileData,
+        count: newCount,
+        completedSets: newCompletedSets,
+        history: newHistory
+      }
+    }));
+
+    syncToSheet('undo_stamp');
+    setCheer("已撤回上一步！✨");
+  };
+
   const handlePenaltyStamp = () => {
     if (currentProfileData.count === 0) return;
     setShowPenaltyImpact(true); setTimeout(() => setShowPenaltyImpact(false), 400);
 
-    // 本地邏輯... (略微簡化，重點是發送 penalty 指令)
     const newHistory = [...currentProfileData.history];
     for (let i = newHistory.length - 1; i >= 0; i--) {
         if (newHistory[i].type === 'stamp') { newHistory[i].type = 'penalty'; break; }
@@ -189,10 +229,7 @@ const App: React.FC = () => {
   };
 
   const executeReset = () => {
-    // 雲端同步：發送重置指令 (這是關鍵！)
     syncToSheet('reset_all');
-
-    // 本地更新
     setUserData(prev => ({
       ...prev,
       [activeProfile === 'A' ? 'profileA' : 'profileB']: {
@@ -206,6 +243,43 @@ const App: React.FC = () => {
     setCheer('紀錄已歸零，重新開始努力吧！✨');
   };
 
+  const handleRedeemGift = () => {
+      // 1. 雲端同步
+      syncToSheet('redeem_gift');
+
+      // 2. 本地預演 (只扣前10個)
+      const validStampIndices = currentProfileData.history
+      .map((h, i) => (h.type === 'stamp' ? i : -1))
+      .filter(i => i !== -1);
+
+      const newHistory = [...currentProfileData.history];
+      for (let i = 0; i < 10; i++) {
+        const idx = validStampIndices[i];
+        if (idx !== undefined) {
+             newHistory[idx] = { ...newHistory[idx], type: 'redeemed' };
+        }
+      }
+      
+      let newCount = currentProfileData.count;
+      let newSets = currentProfileData.completedSets;
+      if (newSets > 0) newSets--; 
+      
+      const validCount = newHistory.filter(h => h.type === 'stamp').length;
+      newCount = validCount % MAX_STAMPS;
+      newSets = Math.floor(validCount / MAX_STAMPS);
+
+      setUserData(prev => ({
+        ...prev,
+        [activeProfile === 'A' ? 'profileA' : 'profileB']: {
+          ...currentProfileData,
+          count: newCount,
+          completedSets: newSets,
+          history: newHistory
+        }
+      }));
+      setGiftStage('closed');
+  };
+
   const saveName = () => {
     if (tempName.trim()) {
       const newName = tempName.trim();
@@ -217,9 +291,6 @@ const App: React.FC = () => {
         }
       }));
       setIsEditingName(false);
-      
-      // 關鍵：修改名字時，發送一個特殊的 'update_profile' 事件
-      // 這樣其他人重播時，讀到這一行就會更新名字
       syncToSheet('update_profile', newName); 
     } else {
         setIsEditingName(false);
@@ -237,50 +308,8 @@ const App: React.FC = () => {
             avatar: validUrl
             }
         }));
-        // 同步頭像
         syncToSheet('update_profile', undefined, validUrl);
     }
-  };
-
-  // (其餘 UI 邏輯如 handleUndo, handleRedeemGift, handleGiftClick 保持不變，
-  // 但請確保它們在執行時也呼叫 syncToSheet('對應類型'))
-
-  // Undo 範例
-  const handleUndo = () => {
-      // ... (省略本地邏輯判斷) ...
-      // 簡化：Undo 比較複雜，建議直接視為「刪除上一筆」，
-      // 但因為 GAS 是 appendRow，我們可以用 penalty 或特殊 undo 類型處理
-      // 這裡暫時保持原樣，或發送 'penalty' 來抵銷
-      if (currentProfileData.history.length === 0) return;
-       
-      // 這裡為了簡單，我們只做本地倒退，雲端部分建議發送 'penalty' 或是特殊的 'undo'
-      // 讓重播邏輯去處理
-      // 為避免複雜，暫不實作雲端 Undo 的完美回溯
-      alert("目前版本僅支援本地撤回，重新整理後可能會還原。建議使用「扣一點」功能來修正錯誤。");
-  };
-  
-  const handleRedeemGift = () => {
-      // ...本地邏輯...
-      syncToSheet('redeem_gift');
-      // ...
-      const validStampIndices = currentProfileData.history
-      .map((h, i) => (h.type === 'stamp' ? i : -1))
-      .filter(i => i !== -1);
-
-      const newHistory = [...currentProfileData.history];
-      for (let i = 0; i < 10; i++) {
-        const idx = validStampIndices[i];
-        newHistory[idx] = { ...newHistory[idx], type: 'redeemed' };
-      }
-      
-      setUserData(prev => ({
-        ...prev,
-        [activeProfile === 'A' ? 'profileA' : 'profileB']: {
-          ...currentProfileData,
-          history: newHistory
-        }
-      }));
-      setGiftStage('closed');
   };
 
   const handleGiftClick = (e: React.MouseEvent) => {
@@ -297,15 +326,8 @@ const App: React.FC = () => {
   const maxPages = Math.max(1, Math.ceil(currentProfileData.history.length / HISTORY_PER_PAGE));
 
   return (
-    // ... UI 部分保持不變，直接複製您原本的 return (...) 即可 ...
-    // 請確保將上面的邏輯函式 (saveName, executeReset 等) 替換掉原本的
     <div className={`min-h-screen pb-24 transition-colors duration-500 ${profileInfo.bgColor}`}>
-        {/* 把您原本的 UI JSX 全部貼在這裡 */}
-        {/* 為了節省篇幅，請保留您原本的 JSX 結構，
-            重點是上面 useEffect 和 saveName/executeReset 的邏輯改變 */}
-            
-        {/* 這裡示範 Header 部分，確保 saveName 被正確綁定 */}
-        {showResetConfirm && (
+      {showResetConfirm && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-md p-6 animate-in fade-in duration-200">
           <div className="bg-white rounded-[2.5rem] p-8 max-w-sm w-full shadow-2xl animate-in zoom-in-95 duration-200">
             <div className="text-5xl mb-4 text-center">⚠️</div>
@@ -320,7 +342,7 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
-      
+
       {giftStage !== 'none' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md animate-in fade-in duration-300" onClick={() => giftStage === 'opened' && setGiftStage('none')}>
           <div className="text-center px-6" onClick={(e) => e.stopPropagation()}>
@@ -454,17 +476,4 @@ const App: React.FC = () => {
       <nav className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-gray-100 px-8 py-4 z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
         <div className="max-w-xl mx-auto flex justify-around items-center">
           <button onClick={() => setView('card')} className={`flex flex-col items-center gap-1.5 transition-all ${view === 'card' ? profileInfo.primaryColor : 'text-gray-400'}`}>
-            <div className={`p-2.5 rounded-[1.25rem] ${view === 'card' ? `${profileInfo.bgColor}` : ''}`}><svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg></div>
-            <span className="text-[11px] font-black uppercase">我的卡片</span>
-          </button>
-          <button onClick={() => setView('history')} className={`flex flex-col items-center gap-1.5 transition-all ${view === 'history' ? profileInfo.primaryColor : 'text-gray-400'}`}>
-            <div className={`p-2.5 rounded-[1.25rem] ${view === 'history' ? `${profileInfo.bgColor}` : ''}`}><svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg></div>
-            <span className="text-[11px] font-black uppercase">成就榜</span>
-          </button>
-        </div>
-      </nav>
-    </div>
-  );
-};
-
-export default App;
+            <div className={`p-2.5 rounded-[1.25rem] ${view === 'card' ? `${profileInfo.bgColor}` : ''}`}><svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586
