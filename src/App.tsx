@@ -29,7 +29,7 @@ const App: React.FC = () => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'none'>('none');
 
-  // 🔄 核心同步邏輯：從 Google Sheets 獲取資料並重播狀態
+  // 🔄 核心同步邏輯
   const fetchSheetData = useCallback(async () => {
     if (document.visibilityState !== 'visible') return;
 
@@ -52,7 +52,6 @@ const App: React.FC = () => {
           if (row.avatar && row.avatar !== 'undefined') target.avatar = row.avatar;
 
           if (row.type === 'stamp') {
-              // ✅ 雲端同步時，會保留當時蓋下的 stampId
               target.history.push({ type: 'stamp', stampId: row.stampId || 'star', timestamp: row.timestamp });
               target.count++;
               if (target.count >= MAX_STAMPS) {
@@ -113,14 +112,13 @@ const App: React.FC = () => {
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     fetchSheetData();
-    const intervalId = setInterval(fetchSheetData, 30000); // 🕒 30 秒同步一次
+    const intervalId = setInterval(fetchSheetData, 30000); 
     return () => {
       clearInterval(intervalId);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [fetchSheetData]);
 
-  // 📤 發送資料到 Google Sheets
   const syncToSheet = async (type: string, overrideName?: string, overrideAvatar?: string) => {
     const currentData = activeProfile === 'A' ? userData.profileA : userData.profileB;
     const payload = {
@@ -131,7 +129,6 @@ const App: React.FC = () => {
       timestamp: new Date().toISOString(),
       stampId: selectedStamp.id
     };
-
     try {
       setSaveStatus('saving');
       await fetch(VITE_SHEET_API_URL, {
@@ -151,14 +148,12 @@ const App: React.FC = () => {
   const currentProfileData = activeProfile === 'A' ? userData.profileA : userData.profileB;
   const profileInfo = PROFILE_CONFIG[activeProfile];
 
-  // 🎯 蓋章邏輯：將當前選中的款式鎖定到歷史紀錄中
   const handleAddStamp = async () => {
     setShowImpact(true); setTimeout(() => setShowImpact(false), 300);
     let newCount = currentProfileData.count + 1;
     let newCompletedSets = currentProfileData.completedSets;
     if (newCount >= MAX_STAMPS) { newCount = 0; newCompletedSets++; }
     
-    // ✅ 這裡鎖定當下選中的款式
     const newHistoryEntry: HistoryItem = { 
       type: 'stamp', 
       stampId: selectedStamp.id, 
@@ -177,7 +172,6 @@ const App: React.FC = () => {
     setLoadingCheer(false);
   };
 
-  // 其餘按鈕邏輯保持不變...
   const handlePenaltyStamp = () => {
     if (currentProfileData.count === 0) return;
     setShowPenaltyImpact(true); setTimeout(() => setShowPenaltyImpact(false), 400);
@@ -313,7 +307,7 @@ const App: React.FC = () => {
                     ) : (
                       <h2 onClick={() => { setTempName(currentProfileData.name); setIsEditingName(true); }} className={`text-2xl font-black cursor-pointer ${profileInfo.primaryColor}`}>{currentProfileData.name}</h2>
                     )}
-                    <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mt-1">目前進度: {currentProfileData.count}/10</p>
+                    <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mt-1">目前進度: {currentProfileData.count === 0 && currentProfileData.history.filter(h => h.type === 'stamp').length % MAX_STAMPS === 0 && currentProfileData.history.filter(h => h.type === 'stamp').length > 0 ? '10' : currentProfileData.count}/10</p>
                   </div>
                 </div>
                 {currentProfileData.completedSets > 0 && <div className="flex -space-x-3">{Array.from({ length: Math.min(currentProfileData.completedSets, 3) }).map((_, i) => (<div key={i} className="w-12 h-12 rounded-full bg-amber-50 border-4 border-amber-100 flex items-center justify-center text-2xl shadow-sm rotate-12">🏆</div>))}</div>}
@@ -323,24 +317,33 @@ const App: React.FC = () => {
                 <p className="italic font-bold text-gray-700 text-sm">{loadingCheer ? "正在寫信..." : cheer || "開始集點吧！✨"}</p>
               </div>
 
-              {/* 🍓 印章格子區：這部分已修復，會讀取歷史紀錄中的正確款式 */}
+              {/* 🍓 修正後的印章格子顯示區：處理第十點消失的問題 */}
               <div className={`grid grid-cols-5 gap-4 mb-10 justify-items-center relative ${showImpact || showPenaltyImpact ? 'shake' : ''}`}>
                 {Array.from({ length: MAX_STAMPS }).map((_, i) => {
-                  // ✅ 過濾出屬於目前這張卡片（這一組 10 點）的有效印章
-                  const validStampsInCurrentSet = currentProfileData.history.filter(h => h.type === 'stamp');
-                  // 找出對應位置的印章紀錄
-                  const stampRecord = validStampsInCurrentSet[currentProfileData.completedSets * MAX_STAMPS + i];
+                  const allValidStamps = currentProfileData.history.filter(h => h.type === 'stamp');
                   
-                  // 根據紀錄找到對應的 emoji，如果還沒蓋，就預覽當前選中的款式
+                  // ✅ 核心修正：判斷是否正處於「剛蓋滿 10 點」的瞬間
+                  const isJustCompleted = currentProfileData.count === 0 && 
+                                        allValidStamps.length > 0 && 
+                                        allValidStamps.length % MAX_STAMPS === 0;
+                  
+                  const setOffset = isJustCompleted 
+                    ? (currentProfileData.completedSets - 1) * MAX_STAMPS 
+                    : currentProfileData.completedSets * MAX_STAMPS;
+
+                  const stampRecord = allValidStamps[setOffset + i];
                   const displayEmoji = stampRecord 
                     ? STAMP_OPTIONS.find(s => s.id === stampRecord.stampId)?.emoji 
                     : selectedStamp.emoji;
+
+                  // 如果是剛蓋滿，10 格全部亮起；否則按 count 數量亮起
+                  const isStamped = isJustCompleted ? true : i < currentProfileData.count;
 
                   return (
                     <StampCircle 
                       key={i} 
                       index={i} 
-                      isStamped={i < currentProfileData.count} 
+                      isStamped={isStamped} 
                       emoji={displayEmoji || '⭐'} 
                     />
                   );
