@@ -5,7 +5,7 @@ import StampCircle from './components/StampCircle';
 import { getCheerMessage } from './services/geminiService';
 
 const HISTORY_PER_PAGE = 50;
-const VITE_SHEET_API_URL = "https://script.google.com/macros/s/AKfycbyEeqdXPk5mbHbrlzH-XVpfrwNd_NZlhDRl4uB1f8aU6HkZ0XSa6obfeJxKZlDa9NctrQ/exec";
+const VITE_SHEET_API_URL = "https://script.google.com/macros/s/AKfycbwKQIF6EbuzifPKhOgVWv74Ia1xruzC7mE-uLY0aYNmPrnnsLEpPGexNWduM9VAc84gCQ/exec";
 
 const App: React.FC = () => {
   const [activeProfile, setActiveProfile] = useState<UserProfile>('A');
