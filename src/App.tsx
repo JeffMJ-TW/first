@@ -320,34 +320,33 @@ const App: React.FC = () => {
               {/* 🍓 修正後的印章格子顯示區：處理第十點消失的問題 */}
               <div className={`grid grid-cols-5 gap-4 mb-10 justify-items-center relative ${showImpact || showPenaltyImpact ? 'shake' : ''}`}>
                 {Array.from({ length: MAX_STAMPS }).map((_, i) => {
-                  const allValidStamps = currentProfileData.history.filter(h => h.type === 'stamp');
-                  
-                  // ✅ 核心修正：判斷是否正處於「剛蓋滿 10 點」的瞬間
-                  const isJustCompleted = currentProfileData.count === 0 && 
-                                        allValidStamps.length > 0 && 
-                                        allValidStamps.length % MAX_STAMPS === 0;
-                  
-                  const setOffset = isJustCompleted 
-                    ? (currentProfileData.completedSets - 1) * MAX_STAMPS 
-                    : currentProfileData.completedSets * MAX_STAMPS;
+  const allValidStamps = currentProfileData.history.filter(h => h.type === 'stamp');
+  
+  // 判斷是否正處於剛集滿 10 點的狀態
+  const isJustCompleted = currentProfileData.count === 0 && 
+                        allValidStamps.length > 0 && 
+                        allValidStamps.length % MAX_STAMPS === 0;
 
-                  const stampRecord = allValidStamps[setOffset + i];
-                  const displayEmoji = stampRecord 
-                    ? STAMP_OPTIONS.find(s => s.id === stampRecord.stampId)?.emoji 
-                    : selectedStamp.emoji;
+  // 直接取得當前輪次的印章記錄列表（倒數的有效印章）
+  const displayCount = isJustCompleted ? MAX_STAMPS : currentProfileData.count;
+  const currentSetStamps = allValidStamps.slice(-displayCount || allValidStamps.length);
+  const stampRecord = currentSetStamps[i];
 
-                  // 如果是剛蓋滿，10 格全部亮起；否則按 count 數量亮起
-                  const isStamped = isJustCompleted ? true : i < currentProfileData.count;
+  // 取得該格專屬的 Emoji，如果找不到才預設為星星，絕不讀取 selectedStamp
+  const recordedEmoji = stampRecord ? STAMP_OPTIONS.find(s => s.id === stampRecord.stampId)?.emoji : undefined;
+  const displayEmoji = recordedEmoji || '⭐';
 
-                  return (
-                    <StampCircle 
-                      key={i} 
-                      index={i} 
-                      isStamped={isStamped} 
-                      emoji={displayEmoji || '⭐'} 
-                    />
-                  );
-                })}
+  const isStamped = isJustCompleted ? true : i < currentProfileData.count;
+
+  return (
+    <StampCircle 
+      key={i} 
+      index={i} 
+      isStamped={isStamped} 
+      emoji={displayEmoji} 
+    />
+  );
+})}
                 {showImpact && <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20"><span className="text-[10rem] impact-animation">{selectedStamp.emoji}</span></div>}
                 {showPenaltyImpact && <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20"><span className="text-[12rem] impact-animation text-red-500 font-black opacity-80">✕</span></div>}
               </div>
